@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useAlbumStore, albumStorageBytes } from "../../stores/albumStore";
-import { formatBytes } from "../../utils/tauriCommands";
+import { formatBytes, backupDevice, restoreBackup } from "../../utils/tauriCommands";
 import { useDevice } from "../../hooks/useDevice";
+
 
 const StorageRing = ({ usedBytes, totalBytes }: { usedBytes: number; totalBytes: number }) => {
   const percent = totalBytes > 0 ? Math.min(100, Math.round((usedBytes / totalBytes) * 100)) : 0;
@@ -85,6 +86,8 @@ const DeviceStatus = () => {
           Read eMMC album
         </button>
       </div>
+
+      <BackupRestoreActions connected={connected} />
     </section>
   );
 };
@@ -140,6 +143,69 @@ const SongList = () => {
 
       <p className="panel-note">Loaded audio occupies approximately {formatBytes(stats.bytes)} of raw sector data.</p>
     </section>
+  );
+};
+
+const BackupRestoreActions = ({ connected }: { connected: boolean }) => {
+  const [backingUp, setBackingUp] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const handleBackup = async () => {
+    setBackingUp(true);
+    setMessage(null);
+    try {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const outputPath = `~/stem-player-backup-${timestamp}.bin`;
+      const totalSectors = 1892352; // ~14.4 GB eMMC
+      const result = await backupDevice(outputPath, totalSectors);
+      setMessage(`Backup saved: ${result}`);
+    } catch (err) {
+      setMessage(`Backup failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBackingUp(false);
+    }
+  };
+
+  const handleRestore = async () => {
+    setRestoring(true);
+    setMessage(null);
+    try {
+      const input = window.prompt("Enter path to backup file:");
+      if (!input) {
+        setRestoring(false);
+        return;
+      }
+      const sectors = await restoreBackup(input);
+      setMessage(`Restore complete: ${sectors.toLocaleString()} sectors written`);
+    } catch (err) {
+      setMessage(`Restore failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  return (
+    <div className="backup-actions">
+      <p className="eyebrow">Backup &amp; Restore</p>
+      <div className="button-row">
+        <button
+          className="secondary-action"
+          onClick={() => void handleBackup()}
+          disabled={!connected || backingUp || restoring}
+        >
+          {backingUp ? "Backing up…" : "Backup eMMC"}
+        </button>
+        <button
+          className="secondary-action danger"
+          onClick={() => void handleRestore()}
+          disabled={!connected || backingUp || restoring}
+        >
+          {restoring ? "Restoring…" : "Restore from backup"}
+        </button>
+      </div>
+      {message ? <p className="inline-info">{message}</p> : null}
+    </div>
   );
 };
 
