@@ -262,10 +262,167 @@ fn upload_song(
 }
 
 #[tauri::command]
-fn flash_firmware(state: State<AppState>, path: String) -> Result<(), String> {
-    let device = state.device.lock().map_err(|e| format!("{}", e))?;
-    let fw_data = firmware::FirmwareFlasher::load_firmware(std::path::Path::new(&path))?;
-    firmware::FirmwareFlasher::flash(&device, &fw_data)
+fn flash_firmware(_state: State<AppState>, _path: String) -> Result<(), String> {
+    Err("Use start_firmware_flash for guided flashing".into())
+}
+
+#[tauri::command]
+async fn start_firmware_flash(app: AppHandle) -> Result<serde_json::Value, String> {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command;
+
+    let _ = app.emit("flash-progress", serde_json::json!({
+        "stage": "waiting_bootloader",
+        "percent": 0,
+        "message": "Step 1: Unplug your Stem Player. Then hold the small side button while plugging it back in via USB-C. This enters bootloader mode."
+    }));
+
+    // Find the firmware binary
+    let fw_path = {
+        let resource_dir = app.path().resource_dir()
+            .map_err(|e| format!("Resource dir: {}", e))?;
+        let bundled = resource_dir.join("firmware").join("armgcc").join("_build").join("nrf52840_xxaa.bin");
+        if bundled.exists() {
+            bundled
+        } else {
+            let dev_fw = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent().unwrap_or(std::path::Path::new("."))
+                .join("firmware").join("armgcc").join("_build").join("nrf52840_xxaa.bin");
+            if dev_fw.exists() {
+                dev_fw
+            } else {
+                return Err("Firmware binary not found. Build firmware first.".into());
+            }
+        }
+    };
+
+    // Find the flash script
+    let flash_script = {
+        let resource_dir = app.path().resource_dir()
+            .map_err(|e| format!("Resource dir: {}", e))?;
+        let bundled = resource_dir.join("firmware").join("flash_firmware.py");
+        if bundled.exists() {
+            bundled
+        } else {
+            let dev_script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent().unwrap_or(std::path::Path::new("."))
+                .join("firmware").join("flash_firmware.py");
+            if dev_script.exists() {
+                dev_script
+            } else {
+                return Err("Flash script not found.".into());
+            }
+        }
+    };
+
+    let app_handle = app.clone();
+    let fw_str = fw_path.to_string_lossy().to_string();
+    let script_str = flash_script.to_string_lossy().to_string();
+
+    tokio::spawn(async move {
+        // Poll for serial port appearing (bootloader mode)
+        let _ = app_handle.emit("flash-progress", serde_json::json!({
+            "stage": "waiting_bootloader",
+            "percent": 5,
+            "message": "Waiting for device to appear in bootloader mode... Hold the small side button and plug in USB-C now."
+        }));
+
+        let mut port_found = None;
+        for attempt in 0..120 { // Wait up to 60 seconds
+            let output = tokio::process::Command::new("python3")
+                .arg("-c")
+                .arg("import serial.tools.list_ports; ports = serial.tools.list_ports.comports(); [print(f'{p.device}|{p.vid or 0}|{p.description}') for p in ports if 'Bluetooth' not in p.device and 'debug' not in p.device and 'wlan' not in p.device]")
+                .output().await;
+            
+            if let Ok(out) = output {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                for line in stdout.lines() {
+                    let parts: Vec<&str> = line.split('|').collect();
+                    if parts.len() >= 2 {
+                        let device = parts[0];
+                        // Any non-system serial port likely is the bootloader
+                        if device.contains("usbmodem") || device.contains("usbserial") || device.contains("cu.") {
+                            if !device.contains("Bluetooth") && !device.contains("debug") && !device.contains("wlan") {
+                                port_found = Some(device.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if port_found.is_some() { break; }
+            
+            if attempt % 10 == 0 && attempt > 0 {
+                let _ = app_handle.emit("flash-progress", serde_json::json!({
+                    "stage": "waiting_bootloader",
+                    "percent": 5,
+                    "message": format!("Still waiting... ({}s) Hold the small side button and plug in USB-C.", attempt / 2)
+                }));
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
+
+        let port = match port_found {
+            Some(p) => p,
+            None => {
+                let _ = app_handle.emit("flash-progress", serde_json::json!({
+                    "stage": "error",
+                    "percent": 0,
+                    "message": "Timed out waiting for bootloader. Make sure to hold the small side button while plugging in USB-C."
+                }));
+                return;
+            }
+        };
+
+        let _ = app_handle.emit("flash-progress", serde_json::json!({
+            "stage": "flashing",
+            "percent": 10,
+            "message": format!("Bootloader detected on {}! Flashing firmware...", port)
+        }));
+
+        // Run the flash script
+        let path_env = format!("/opt/homebrew/bin:/usr/local/bin:{}", std::env::var("PATH").unwrap_or_default());
+        let result = Command::new("python3")
+            .env("PATH", &path_env)
+            .arg(&script_str)
+            .arg(&fw_str)
+            .arg(&port)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output().await;
+
+        match result {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if output.status.success() {
+                    let _ = app_handle.emit("flash-progress", serde_json::json!({
+                        "stage": "complete",
+                        "percent": 100,
+                        "message": "Firmware flashed successfully! Press the function button to restart your Stem Player, then click Connect again."
+                    }));
+                    let _ = app_handle.emit("flash-done", serde_json::json!({}));
+                } else {
+                    let _ = app_handle.emit("flash-progress", serde_json::json!({
+                        "stage": "error",
+                        "percent": 0,
+                        "message": format!("Flash failed: {}{}", stdout, stderr)
+                    }));
+                }
+            }
+            Err(e) => {
+                let _ = app_handle.emit("flash-progress", serde_json::json!({
+                    "stage": "error",
+                    "percent": 0,
+                    "message": format!("Failed to run flash script: {}", e)
+                }));
+            }
+        }
+    });
+
+    Ok(serde_json::json!({ "status": "flashing_started" }))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -284,6 +441,7 @@ pub fn run() {
             start_separation,
             upload_song,
             flash_firmware,
+            start_firmware_flash,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

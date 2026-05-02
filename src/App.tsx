@@ -1,8 +1,9 @@
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useMemo, useState, useEffect, type CSSProperties, type ReactNode } from "react";
 import { AlbumManager } from "./components/AlbumManager/AlbumManager";
 import { DeviceManager } from "./components/DeviceManager/DeviceManager";
 import { FirmwareFlasher } from "./components/FirmwareFlasher/FirmwareFlasher";
 import { StemCreator } from "./components/StemCreator/StemCreator";
+import { useDeviceStore } from "./stores/deviceStore";
 import "./App.css";
 
 type TabId = "device" | "stems" | "albums" | "firmware";
@@ -39,15 +40,25 @@ const tabs: Array<{
   },
 ];
 
-const moduleMap: Record<TabId, ReactNode> = {
-  device: <DeviceManager />,
-  stems: <StemCreator />,
-  albums: <AlbumManager />,
-  firmware: <FirmwareFlasher />,
-};
-
 function App() {
   const [activeTab, setActiveTab] = useState<TabId>("device");
+  const [fwAutoStart, setFwAutoStart] = useState(false);
+  const deviceInfo = useDeviceStore((s) => s.info);
+
+  // Auto-switch to firmware tab when device needs update
+  useEffect(() => {
+    if (deviceInfo?.needs_firmware_update && activeTab === "device") {
+      setFwAutoStart(true);
+      setActiveTab("firmware");
+    }
+  }, [deviceInfo?.needs_firmware_update, activeTab]);
+
+  const moduleMap: Record<TabId, ReactNode> = {
+    device: <DeviceManager />,
+    stems: <StemCreator />,
+    albums: <AlbumManager />,
+    firmware: <FirmwareFlasher autoStart={fwAutoStart} />,
+  };
   const activeTabMeta = useMemo(
     () => tabs.find((tab) => tab.id === activeTab) ?? tabs[0],
     [activeTab],

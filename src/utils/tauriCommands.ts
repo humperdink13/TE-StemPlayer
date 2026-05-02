@@ -48,8 +48,8 @@ export type UploadProgressEvent = {
 
 export type FlashProgressEvent = {
   percent: number;
-  stage: "validating" | "erasing" | "writing" | "verifying" | "complete" | "error";
-  message?: string;
+  stage: "validating" | "erasing" | "writing" | "verifying" | "complete" | "error" | "waiting_bootloader" | "flashing";
+  message: string;
 };
 
 const parseAlbumMetadata = (raw: string | AlbumMetadata): AlbumMetadata => {
@@ -87,6 +87,7 @@ export const tauriCommands = {
     invoke<void>("write_album_metadata", { album }),
 
   flashFirmware: (path: string) => invoke<void>("flash_firmware", { path }),
+  startFirmwareFlash: () => invoke<{ status: string }>("start_firmware_flash"),
 };
 
 export const tauriEvents = {
