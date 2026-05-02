@@ -73,6 +73,11 @@ const DeviceStatus = () => {
       </div>
 
       {error ? <p className="inline-error">{error}</p> : null}
+      {info?.status_message ? (
+        <div className="inline-warning" style={{ background: 'rgba(250,204,21,0.1)', border: '1px solid rgba(250,204,21,0.3)', borderRadius: '8px', padding: '12px 16px', margin: '8px 0' }}>
+          <p style={{ margin: 0, color: '#fbbf24', fontSize: '0.875rem' }}>⚠️ {info.status_message}</p>
+        </div>
+      ) : null}
 
       <div className="button-row">
         <button className="primary-action" onClick={connect} disabled={connecting || connected}>
@@ -81,7 +86,7 @@ const DeviceStatus = () => {
         <button className="secondary-action" onClick={disconnect} disabled={!connected}>
           Disconnect
         </button>
-        <button className="secondary-action" onClick={() => void refreshAlbumMetadata()} disabled={!connected}>
+        <button className="secondary-action" onClick={() => void refreshAlbumMetadata()} disabled={!connected || info?.needs_firmware_update}>
           Read eMMC album
         </button>
       </div>

@@ -5,6 +5,9 @@ export type DeviceInfo = {
   connected: boolean;
   serial: string | null;
   firmware_version: string | null;
+  data_transfer_supported: boolean;
+  needs_firmware_update: boolean;
+  status_message: string | null;
 };
 
 export type SongEntry = {

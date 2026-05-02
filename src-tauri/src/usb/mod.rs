@@ -15,6 +15,9 @@ pub struct DeviceInfo {
     pub connected: bool,
     pub serial: Option<String>,
     pub firmware_version: Option<String>,
+    pub data_transfer_supported: bool,
+    pub needs_firmware_update: bool,
+    pub status_message: Option<String>,
 }
 
 pub struct StemPlayerDevice {
@@ -53,11 +56,34 @@ impl StemPlayerDevice {
                 }
 
                 let serial = handle.read_serial_number_string_ascii(&desc).ok();
+
+                // Probe: try a small vendor control transfer to see if device supports data
+                let data_transfer_supported = {
+                    let mut probe_buf = [0u8; 8];
+                    handle.read_control(
+                        0xC0, 0x01, 0, 0, &mut probe_buf, Duration::from_millis(500)
+                    ).is_ok()
+                };
+
+                let (needs_firmware_update, status_message) = if data_transfer_supported {
+                    (false, None)
+                } else {
+                    (true, Some(
+                        "Device found but its firmware does not support USB data transfers. \
+                         The device needs a firmware update. Go to the Firmware tab to flash \
+                         custom firmware (requires pressing the bootloader button on the device)."
+                        .to_string()
+                    ))
+                };
+
                 self.handle = Some(handle);
                 return Ok(DeviceInfo {
                     connected: true,
                     serial,
                     firmware_version: None,
+                    data_transfer_supported,
+                    needs_firmware_update,
+                    status_message,
                 });
             }
         }

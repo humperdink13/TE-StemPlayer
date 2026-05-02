@@ -44,7 +44,9 @@ export const useDevice = () => {
     try {
       const device = await tauriCommands.connectDevice();
       setDevice(device);
-      await refreshAlbumMetadata();
+      if (device.data_transfer_supported) {
+        await refreshAlbumMetadata();
+      }
       return device;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
