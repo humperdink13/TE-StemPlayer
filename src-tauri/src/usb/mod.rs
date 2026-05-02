@@ -42,11 +42,15 @@ impl StemPlayerDevice {
 
                 // Set active configuration (required before control transfers,
                 // matches all working PyUSB fuzzing scripts)
-                let _ = handle.set_active_configuration(1);
+                if let Err(e) = handle.set_active_configuration(1) {
+                    eprintln!("Warning: set_active_configuration failed: {} (may already be set)", e);
+                }
 
                 // Claim interface 0 (CDC ACM data interface)
                 // This is required for vendor control transfers on the Stem Player
-                let _ = handle.claim_interface(0);
+                if let Err(e) = handle.claim_interface(0) {
+                    eprintln!("Warning: claim_interface(0) failed: {} (kernel driver may hold it)", e);
+                }
 
                 let serial = handle.read_serial_number_string_ascii(&desc).ok();
                 self.handle = Some(handle);
