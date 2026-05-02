@@ -4,6 +4,10 @@ const STEM_PLAYER_VID: u16 = 0x2367;
 const STEM_PLAYER_PID: u16 = 0x1701;
 const SECTOR_SIZE: usize = 8192;
 const MAX_RETRIES: u32 = 3;
+/// Maximum bytes per USB control transfer. The nRF52840 is USB 2.0 full-speed;
+/// many embedded stacks cannot handle large control-transfer data stages.
+/// 512 bytes is a safe, performant choice (16 transfers per 8192-byte sector).
+const CHUNK_SIZE: usize = 512;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DeviceInfo {
@@ -29,8 +33,6 @@ impl StemPlayerDevice {
                 let handle = device.open().map_err(|e| format!("Cannot open device: {}", e))?;
 
                 // Detach kernel driver if active (Linux/macOS CDC ACM driver)
-                // This is needed to prevent the OS CDC driver from interfering
-                // with vendor control transfers on some platforms
                 for iface in 0..=1 {
                     if let Ok(true) = handle.kernel_driver_active(iface) {
                         let _ = handle.detach_kernel_driver(iface);
@@ -53,61 +55,90 @@ impl StemPlayerDevice {
         self.handle = None;
     }
 
-    pub fn is_connected(&self) -> bool { self.handle.is_some() }
+    pub fn is_connected(&self) -> bool {
+        self.handle.is_some()
+    }
 
+    /// Read one or more 8192-byte sectors from the device eMMC.
+    ///
+    /// Each sector is read in CHUNK_SIZE-byte control transfers because the
+    /// nRF52840 USB stack cannot handle a single 8192-byte control transfer.
+    ///
+    /// wValue/wIndex encoding (matching the device firmware, confirmed via
+    /// reverse-engineering fuzzing scripts):
+    ///   wValue = low 16 bits of the sector-relative byte offset
+    ///   wIndex = high 16 bits (sector number for sector-addressed requests)
     pub fn read_sectors(&self, start_sector: u32, count: u32) -> Result<Vec<u8>, String> {
         let handle = self.handle.as_ref().ok_or("Not connected")?;
         let mut buffer = vec![0u8; SECTOR_SIZE * count as usize];
 
         for i in 0..count {
             let sector = start_sector + i;
-            let offset = (i as usize) * SECTOR_SIZE;
-            let mut sector_buf = [0u8; SECTOR_SIZE];
+            let buf_offset = (i as usize) * SECTOR_SIZE;
 
-            let mut last_err = None;
-            for retry in 0..MAX_RETRIES {
-                match handle.read_control(
-                    0xC0, // Device-to-Host, Vendor, Device recipient
-                    0x01, // bRequest: Read
-                    (sector >> 16) as u16,
-                    (sector & 0xFFFF) as u16,
-                    &mut sector_buf,
-                    Duration::from_secs(5),
-                ) {
-                    Ok(bytes_read) => {
-                        if bytes_read != SECTOR_SIZE {
-                            last_err = Some(format!(
-                                "Read sector {}: expected {} bytes, got {}",
-                                sector, SECTOR_SIZE, bytes_read
-                            ));
-                            std::thread::sleep(Duration::from_millis(100 * (retry as u64 + 1)));
-                            continue;
+            // Read one sector in CHUNK_SIZE pieces
+            let chunks_per_sector = SECTOR_SIZE / CHUNK_SIZE;
+            for chunk_idx in 0..chunks_per_sector {
+                let byte_offset_in_sector = chunk_idx * CHUNK_SIZE;
+                // Combine sector number and byte offset into a 32-bit address.
+                // The device firmware reconstructs: addr = (wIndex << 16) | wValue
+                // So wValue = low 16 bits, wIndex = high 16 bits.
+                let addr = (sector as u64 * SECTOR_SIZE as u64 + byte_offset_in_sector as u64) as u32;
+                let w_value = (addr & 0xFFFF) as u16;
+                let w_index = ((addr >> 16) & 0xFFFF) as u16;
+
+                let dst_start = buf_offset + byte_offset_in_sector;
+                let dst_end = dst_start + CHUNK_SIZE;
+                let mut chunk_buf = [0u8; CHUNK_SIZE];
+
+                let mut last_err = None;
+                for retry in 0..MAX_RETRIES {
+                    match handle.read_control(
+                        0xC0, // Device-to-Host, Vendor, Device recipient
+                        0x01, // bRequest: Read
+                        w_value,
+                        w_index,
+                        &mut chunk_buf,
+                        Duration::from_secs(5),
+                    ) {
+                        Ok(bytes_read) => {
+                            if bytes_read != CHUNK_SIZE {
+                                last_err = Some(format!(
+                                    "Read sector {} chunk {}: expected {} bytes, got {}",
+                                    sector, chunk_idx, CHUNK_SIZE, bytes_read
+                                ));
+                                std::thread::sleep(Duration::from_millis(50 * (retry as u64 + 1)));
+                                continue;
+                            }
+                            last_err = None;
+                            break;
                         }
-                        last_err = None;
-                        break;
-                    }
-                    Err(e) => {
-                        last_err = Some(format!(
-                            "Read sector {} failed (attempt {}): {}",
-                            sector, retry + 1, e
-                        ));
-                        std::thread::sleep(Duration::from_millis(100 * (retry as u64 + 1)));
+                        Err(e) => {
+                            last_err = Some(format!(
+                                "Read sector {} chunk {} failed (attempt {}): {}",
+                                sector, chunk_idx, retry + 1, e
+                            ));
+                            std::thread::sleep(Duration::from_millis(50 * (retry as u64 + 1)));
+                        }
                     }
                 }
-            }
 
-            if let Some(err) = last_err {
-                return Err(format!(
-                    "{}. Make sure the Stem Player is connected and not in use by another application.",
-                    err
-                ));
-            }
+                if let Some(err) = last_err {
+                    return Err(format!(
+                        "{}. Make sure the Stem Player is connected and not in use by another application.",
+                        err
+                    ));
+                }
 
-            buffer[offset..offset + SECTOR_SIZE].copy_from_slice(&sector_buf);
+                buffer[dst_start..dst_end].copy_from_slice(&chunk_buf);
+            }
         }
         Ok(buffer)
     }
 
+    /// Write one or more 8192-byte sectors to the device eMMC.
+    ///
+    /// Uses the same chunked approach and wValue/wIndex encoding as read_sectors.
     pub fn write_sectors(&self, start_sector: u32, data: &[u8]) -> Result<(), String> {
         let handle = self.handle.as_ref().ok_or("Not connected")?;
         if data.len() % SECTOR_SIZE != 0 {
@@ -117,42 +148,53 @@ impl StemPlayerDevice {
 
         for i in 0..count {
             let sector = start_sector + i as u32;
-            let offset = i * SECTOR_SIZE;
+            let buf_offset = i * SECTOR_SIZE;
 
-            let mut last_err = None;
-            for retry in 0..MAX_RETRIES {
-                match handle.write_control(
-                    0x40, // Host-to-Device, Vendor, Device recipient
-                    0x02, // bRequest: Write
-                    (sector >> 16) as u16,
-                    (sector & 0xFFFF) as u16,
-                    &data[offset..offset + SECTOR_SIZE],
-                    Duration::from_secs(5),
-                ) {
-                    Ok(bytes_written) => {
-                        if bytes_written != SECTOR_SIZE {
-                            last_err = Some(format!(
-                                "Write sector {}: expected {} bytes written, got {}",
-                                sector, SECTOR_SIZE, bytes_written
-                            ));
-                            std::thread::sleep(Duration::from_millis(100 * (retry as u64 + 1)));
-                            continue;
+            let chunks_per_sector = SECTOR_SIZE / CHUNK_SIZE;
+            for chunk_idx in 0..chunks_per_sector {
+                let byte_offset_in_sector = chunk_idx * CHUNK_SIZE;
+                let addr = (sector as u64 * SECTOR_SIZE as u64 + byte_offset_in_sector as u64) as u32;
+                let w_value = (addr & 0xFFFF) as u16;
+                let w_index = ((addr >> 16) & 0xFFFF) as u16;
+
+                let src_start = buf_offset + byte_offset_in_sector;
+                let src_end = src_start + CHUNK_SIZE;
+
+                let mut last_err = None;
+                for retry in 0..MAX_RETRIES {
+                    match handle.write_control(
+                        0x40, // Host-to-Device, Vendor, Device recipient
+                        0x02, // bRequest: Write
+                        w_value,
+                        w_index,
+                        &data[src_start..src_end],
+                        Duration::from_secs(5),
+                    ) {
+                        Ok(bytes_written) => {
+                            if bytes_written != CHUNK_SIZE {
+                                last_err = Some(format!(
+                                    "Write sector {} chunk {}: expected {} bytes written, got {}",
+                                    sector, chunk_idx, CHUNK_SIZE, bytes_written
+                                ));
+                                std::thread::sleep(Duration::from_millis(50 * (retry as u64 + 1)));
+                                continue;
+                            }
+                            last_err = None;
+                            break;
                         }
-                        last_err = None;
-                        break;
-                    }
-                    Err(e) => {
-                        last_err = Some(format!(
-                            "Write sector {} failed (attempt {}): {}",
-                            sector, retry + 1, e
-                        ));
-                        std::thread::sleep(Duration::from_millis(100 * (retry as u64 + 1)));
+                        Err(e) => {
+                            last_err = Some(format!(
+                                "Write sector {} chunk {} failed (attempt {}): {}",
+                                sector, chunk_idx, retry + 1, e
+                            ));
+                            std::thread::sleep(Duration::from_millis(50 * (retry as u64 + 1)));
+                        }
                     }
                 }
-            }
 
-            if let Some(err) = last_err {
-                return Err(err);
+                if let Some(err) = last_err {
+                    return Err(err);
+                }
             }
         }
         Ok(())

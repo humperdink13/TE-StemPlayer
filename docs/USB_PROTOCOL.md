@@ -63,8 +63,8 @@ Direct USB control transfers for eMMC read/write operations. Discovered via USB 
 fn vendor_read(handle: &DeviceHandle, sector_offset: u32, buf: &mut [u8; 8192]) -> Result<()> {
     let request_type = 0xC0; // Direction: Device-to-Host, Type: Vendor, Recipient: Device
     let b_request = 0x01;    // Read command
-    let w_value = (sector_offset >> 16) as u16;  // High 16 bits of offset
-    let w_index = (sector_offset & 0xFFFF) as u16; // Low 16 bits of offset
+    let w_value = (sector_offset & 0xFFFF) as u16;  // Low 16 bits of offset
+    let w_index = (sector_offset >> 16) as u16; // High 16 bits of offset
     let timeout = Duration::from_secs(5);
 
     handle.read_control(request_type, b_request, w_value, w_index, buf, timeout)?;
@@ -79,8 +79,8 @@ fn vendor_read(handle: &DeviceHandle, sector_offset: u32, buf: &mut [u8; 8192]) 
 fn vendor_write(handle: &DeviceHandle, sector_offset: u32, data: &[u8; 8192]) -> Result<()> {
     let request_type = 0x40; // Direction: Host-to-Device, Type: Vendor, Recipient: Device
     let b_request = 0x02;    // Write command
-    let w_value = (sector_offset >> 16) as u16;
-    let w_index = (sector_offset & 0xFFFF) as u16;
+    let w_value = (sector_offset & 0xFFFF) as u16;  // Low 16 bits of offset
+    let w_index = (sector_offset >> 16) as u16; // High 16 bits of offset
     let timeout = Duration::from_secs(5);
 
     handle.write_control(request_type, b_request, w_value, w_index, data, timeout)?;

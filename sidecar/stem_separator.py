@@ -15,6 +15,29 @@ from typing import Optional, Dict, Any
 
 
 # ---------------------------------------------------------------------------
+# Dependency check
+# ---------------------------------------------------------------------------
+def check_dependencies():
+    """Verify required Python packages are installed."""
+    missing = []
+    try:
+        import torch
+    except ImportError:
+        missing.append("torch")
+    try:
+        import demucs
+    except ImportError:
+        missing.append("demucs")
+    if missing:
+        msg = (
+            f"Missing required packages: {', '.join(missing)}. "
+            "Install with: pip install demucs torch"
+        )
+        print(json.dumps({"type": "error", "stage": "error", "percent": 0, "message": msg}), flush=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Device detection
 # ---------------------------------------------------------------------------
 def get_device() -> str:
@@ -252,6 +275,7 @@ def handle_separate(cmd: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 def main_sidecar():
     """Sidecar mode: read JSON commands from stdin loop."""
+    check_dependencies()
     print(json.dumps({
         "type": "status",
         "ready": True,
@@ -274,6 +298,7 @@ def main_sidecar():
 
 def main_cli():
     """Command-line interface matching Tauri sidecar invocation."""
+    check_dependencies()
     import argparse
 
     parser = argparse.ArgumentParser(
