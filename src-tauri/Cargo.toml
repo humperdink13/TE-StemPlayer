@@ -17,5 +17,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusb = "0.9"
+serialport = "4.3"
+sha2 = "0.10"
+hex = "0.4"
 tokio = { version = "1", features = ["full"] }

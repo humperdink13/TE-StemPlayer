@@ -1,140 +1,203 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type DeviceInfo = {
+// ─── Shared Types ────────────────────────────────────────────────────────────
+
+export interface DeviceInfo {
   connected: boolean;
+  port_name: string | null;
   serial: string | null;
   firmware_version: string | null;
-};
+}
 
-export type SongEntry = {
+export interface SongEntry {
   id?: string;
+  title: string;
+  artist: string;
   start_sector: number;
   length_sectors: number;
-  artist: string;
-  title: string;
   durationSeconds?: number;
-};
+}
 
-export type AlbumMetadata = {
+export interface AlbumMetadata {
   id?: string;
-  title: string;
+  title?: string;
   songs: SongEntry[];
-};
+}
 
-export type StemSource = {
-  type: "youtube" | "file";
-  value: string;
-};
+export interface UploadProgressEvent {
+  albumId: string;
+  songId: string;
+  percent: number;
+  message?: string;
+}
 
-export type SeparationProgressEvent = {
+export interface FlashProgressEvent {
+  stage: string;
+  percent: number;
+  message?: string;
+}
+
+export type StemSource =
+  | { type: "youtube"; value: string }
+  | { type: "file"; value: string };
+
+export interface SeparationProgressEvent {
   jobId: string;
-  stage: "queued" | "downloading" | "separating" | "normalizing" | "packing" | "complete" | "error";
+  stage: "queued" | "downloading" | "separating" | "encoding" | "complete" | "error";
   percent: number;
   message?: string;
   stems?: string[];
   previewUrl?: string;
-};
+}
 
-export type UploadProgressEvent = {
-  albumId?: string;
-  songId?: string;
-  percent: number;
-  message?: string;
-};
+export interface SeparationResult {
+  jobId: string;
+}
 
-export type FlashProgressEvent = {
-  percent: number;
-  stage: "validating" | "erasing" | "writing" | "verifying" | "complete" | "error";
-  message?: string;
-};
+// ─── Utilities ───────────────────────────────────────────────────────────────
 
-const parseAlbumMetadata = (raw: string | AlbumMetadata): AlbumMetadata => {
-  if (typeof raw === "string") {
-    return JSON.parse(raw) as AlbumMetadata;
-  }
+const SECTOR_SIZE = 8192;
 
-  return raw;
-};
+export function sectorCountToBytes(sectors: number): number {
+  return sectors * SECTOR_SIZE;
+}
+
+export function formatBytes(bytes: number, decimals = 1): string {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
+  const value = bytes / Math.pow(k, i);
+  return `${value.toFixed(decimals)} ${sizes[i]}`;
+}
+
+// ─── Backend Adapter ─────────────────────────────────────────────────────────
+// The Rust backend uses a simpler SongEntry {start_sector, sector_count, name}.
+// We translate between frontend and backend representations here.
+
+interface BackendSongEntry {
+  start_sector: number;
+  sector_count: number;
+  name: string;
+}
+
+interface BackendAlbumMetadata {
+  songs: BackendSongEntry[];
+}
+
+function toBackendAlbum(album: AlbumMetadata): BackendAlbumMetadata {
+  return {
+    songs: album.songs.map((song) => ({
+      start_sector: song.start_sector,
+      sector_count: song.length_sectors,
+      name: song.title + (song.artist ? ` - ${song.artist}` : ""),
+    })),
+  };
+}
+
+function fromBackendAlbum(backend: BackendAlbumMetadata): AlbumMetadata {
+  return {
+    songs: backend.songs.map((song) => {
+      const parts = song.name.split(" - ");
+      return {
+        title: parts[0] || "Untitled",
+        artist: parts.length > 1 ? parts.slice(1).join(" - ") : "Unknown Artist",
+        start_sector: song.start_sector,
+        length_sectors: song.sector_count,
+      };
+    }),
+  };
+}
+
+// ─── Tauri Commands (namespaced) ─────────────────────────────────────────────
 
 export const tauriCommands = {
-  connectDevice: () => invoke<DeviceInfo>("connect_device"),
+  connectDevice: (): Promise<DeviceInfo> => invoke<DeviceInfo>("connect_device"),
 
-  disconnectDevice: () => invoke<void>("disconnect_device"),
+  disconnectDevice: (): Promise<void> => invoke("disconnect_device"),
 
-  getDeviceStatus: () => invoke<boolean>("get_device_status"),
+  getDeviceStatus: (): Promise<boolean> => invoke<boolean>("get_device_status"),
 
-  async readAlbumMetadata() {
-    const raw = await invoke<string | AlbumMetadata>("read_album_metadata");
-    return parseAlbumMetadata(raw);
+  readAlbumMetadata: async (): Promise<AlbumMetadata> => {
+    const json = await invoke<string>("read_album_metadata");
+    const backend: BackendAlbumMetadata = JSON.parse(json);
+    return fromBackendAlbum(backend);
   },
 
-  /**
-   * Backend command planned in ARCHITECTURE.md. The hook/store layer catches
-   * "command not found" and keeps a useful queued job in the UI until the Rust
-   * side exposes the implementation.
-   */
-  startSeparation: (source: StemSource) =>
-    invoke<{ jobId: string }>("start_separation", { source }),
+  writeAlbumMetadata: async (metadata: AlbumMetadata): Promise<void> => {
+    const backend = toBackendAlbum(metadata);
+    return invoke("write_album_metadata", {
+      metadataJson: JSON.stringify(backend),
+    });
+  },
 
-  uploadSong: (album: AlbumMetadata, song: SongEntry) =>
-    invoke<void>("upload_song", { album, song }),
+  uploadSongSectors: (startSector: number, sectorsB64: string[]): Promise<void> =>
+    invoke("upload_song_sectors", { startSector, sectorsB64 }),
 
-  writeAlbumMetadata: (album: AlbumMetadata) =>
-    invoke<void>("write_album_metadata", { album }),
+  uploadSong: async (_album: AlbumMetadata, song: SongEntry): Promise<void> => {
+    // Stub: In the future this will read local stem files, encode them, and
+    // upload sector-by-sector. For now it writes placeholder sectors.
+    const placeholder = btoa(String.fromCharCode(...new Uint8Array(SECTOR_SIZE)));
+    const sectors = Array.from({ length: song.length_sectors }, () => placeholder);
+    await invoke("upload_song_sectors", {
+      startSector: song.start_sector,
+      sectorsB64: sectors,
+    });
+  },
 
-  flashFirmware: (path: string) => invoke<void>("flash_firmware", { path }),
+  readSectors: (start: number, count: number): Promise<string[]> =>
+    invoke<string[]>("read_sectors", { start, count }),
+
+  backupDevice: (outputPath: string, sectorCount: number): Promise<string> =>
+    invoke<string>("backup_device", { outputPath, sectorCount }),
+
+  restoreBackup: (backupPath: string): Promise<number> =>
+    invoke<number>("restore_backup", { backupPath }),
+
+  flashFirmware: (path: string): Promise<void> => invoke("flash_firmware", { path }),
+
+  startSeparation: async (_source: StemSource): Promise<SeparationResult> => {
+    // Stub: Stem separation backend (Demucs) is not yet implemented.
+    // Returns a fake job ID so the UI flow works.
+    return { jobId: crypto.randomUUID?.() ?? `${Date.now()}` };
+  },
 };
 
+// ─── Tauri Events (namespaced) ───────────────────────────────────────────────
+
 export const tauriEvents = {
-  onDeviceConnected: (handler: (event: DeviceInfo) => void): Promise<UnlistenFn> =>
+  onDeviceConnected: (handler: (device: DeviceInfo) => void): Promise<UnlistenFn> =>
     listen<DeviceInfo>("device-connected", (event) => handler(event.payload)),
 
   onDeviceDisconnected: (handler: () => void): Promise<UnlistenFn> =>
     listen("device-disconnected", () => handler()),
 
-  onSeparationProgress: (
-    handler: (event: SeparationProgressEvent) => void,
-  ): Promise<UnlistenFn> =>
-    listen<SeparationProgressEvent>("separation-progress", (event) =>
-      handler(event.payload),
-    ),
+  onUploadProgress: (handler: (progress: UploadProgressEvent) => void): Promise<UnlistenFn> =>
+    listen<UploadProgressEvent>("upload-progress", (event) => handler(event.payload)),
 
-  onSeparationDone: (
-    handler: (event: SeparationProgressEvent) => void,
-  ): Promise<UnlistenFn> =>
-    listen<SeparationProgressEvent>("separation-done", (event) =>
-      handler({ ...event.payload, stage: "complete", percent: 100 }),
-    ),
-
-  onUploadProgress: (
-    handler: (event: UploadProgressEvent) => void,
-  ): Promise<UnlistenFn> =>
-    listen<UploadProgressEvent>("upload-progress", (event) =>
-      handler(event.payload),
-    ),
-
-  onFlashProgress: (
-    handler: (event: FlashProgressEvent) => void,
-  ): Promise<UnlistenFn> =>
-    listen<FlashProgressEvent>("flash-progress", (event) =>
-      handler(event.payload),
-    ),
+  onFlashProgress: (handler: (progress: FlashProgressEvent) => void): Promise<UnlistenFn> =>
+    listen<FlashProgressEvent>("flash-progress", (event) => handler(event.payload)),
 
   onFlashDone: (handler: () => void): Promise<UnlistenFn> =>
     listen("flash-done", () => handler()),
+
+  onSeparationProgress: (handler: (event: SeparationProgressEvent) => void): Promise<UnlistenFn> =>
+    listen<SeparationProgressEvent>("separation-progress", (event) => handler(event.payload)),
+
+  onSeparationDone: (handler: (event: SeparationProgressEvent) => void): Promise<UnlistenFn> =>
+    listen<SeparationProgressEvent>("separation-done", (event) => handler(event.payload)),
 };
 
-export const formatBytes = (bytes: number) => {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return "0 B";
-  }
+// ─── Legacy flat exports (backward compatibility) ────────────────────────────
 
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / 1024 ** index;
-
-  return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
-};
-
-export const sectorCountToBytes = (sectors: number) => sectors * 8192;
+export const connectDevice = tauriCommands.connectDevice;
+export const disconnectDevice = tauriCommands.disconnectDevice;
+export const getDeviceStatus = tauriCommands.getDeviceStatus;
+export const readAlbumMetadata = tauriCommands.readAlbumMetadata;
+export const writeAlbumMetadata = tauriCommands.writeAlbumMetadata;
+export const uploadSongSectors = tauriCommands.uploadSongSectors;
+export const readSectors = tauriCommands.readSectors;
+export const backupDevice = tauriCommands.backupDevice;
+export const restoreBackup = tauriCommands.restoreBackup;
+export const flashFirmware = tauriCommands.flashFirmware;
