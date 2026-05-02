@@ -1,130 +1,303 @@
-const SECTOR_SIZE: usize = 8192;
+//! Album metadata sector (sector 0 on the SP-1 eMMC).
+//!
+//! Binary format:
+//!   Bytes 0-12:   Magic bytes "ALBUM_PRESENT"
+//!   Byte  13:     Version (currently 1)
+//!   Bytes 14-15:  Reserved (zero)
+//!   Bytes 16-19:  Song count (u32 LE)
+//!   Bytes 20+:    Song entries (each 136 bytes)
+//!
+//! Song entry (136 bytes):
+//!   Bytes 0-3:    start_sector (u32 LE) — first sector of this song
+//!   Bytes 4-7:    sector_count (u32 LE) — number of sectors
+//!   Bytes 8-71:   artist (64 bytes, UTF-8, null-terminated, 'X' padded)
+//!   Bytes 72-135: title  (64 bytes, UTF-8, null-terminated, 'X' padded)
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SongEntry {
+use std::fmt;
+
+/// Magic bytes that identify a valid album metadata sector.
+pub const MAGIC: &[u8; 13] = b"ALBUM_PRESENT";
+
+/// Current metadata format version.
+pub const VERSION: u8 = 1;
+
+/// Size of a song entry in bytes.
+pub const SONG_ENTRY_SIZE: usize = 136;
+
+/// Maximum length of artist/title string fields (including null terminator).
+pub const STRING_FIELD_SIZE: usize = 64;
+
+/// Maximum number of songs that fit in one metadata sector.
+pub const MAX_SONGS: usize = (super::SECTOR_SIZE - 20) / SONG_ENTRY_SIZE; // ~60
+
+
+/// A single song entry in the album metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Song {
+    /// Sector index where this song's data begins.
     pub start_sector: u32,
-    pub length_sectors: u32,
+    /// Number of sectors this song occupies.
+    pub sector_count: u32,
+    /// Artist name (max 63 characters + null terminator).
     pub artist: String,
+    /// Song title (max 63 characters + null terminator).
     pub title: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AlbumMetadata {
-    pub title: String,
-    pub songs: Vec<SongEntry>,
+
+/// Album metadata containing all songs on the device.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Album {
+    pub songs: Vec<Song>,
 }
 
-const MAGIC: &[u8] = b"ALBUM_PRESENT";
 
-impl AlbumMetadata {
-    /// Create the album metadata sector
-    pub fn to_sector(&self) -> Vec<u8> {
-        let mut sector = vec![0u8; SECTOR_SIZE];
-        let mut offset = 0;
-
-        // Magic bytes
-        sector[offset..offset + MAGIC.len()].copy_from_slice(MAGIC);
-        offset += MAGIC.len();
-
-        // Album length placeholder (total sectors)
-        let total_sectors: u32 = self.songs.iter().map(|s| s.length_sectors).sum();
-        sector[offset..offset + 4].copy_from_slice(&total_sectors.to_le_bytes());
-        offset += 4;
-
-        // Song count
-        let song_count = self.songs.len() as u32;
-        sector[offset..offset + 4].copy_from_slice(&song_count.to_le_bytes());
-        offset += 4;
-
-        // Album title (64 bytes, null-terminated, X-padded)
-        let title_bytes = pad_string(&self.title, 64);
-        sector[offset..offset + 64].copy_from_slice(&title_bytes);
-        offset += 64;
-
-        // Song entries
-        for song in &self.songs {
-            // Start offset (4 bytes)
-            sector[offset..offset + 4].copy_from_slice(&song.start_sector.to_le_bytes());
-            offset += 4;
-
-            // Length in sectors (4 bytes)
-            sector[offset..offset + 4].copy_from_slice(&song.length_sectors.to_le_bytes());
-            offset += 4;
-
-            // Artist (64 bytes)
-            let artist_bytes = pad_string(&song.artist, 64);
-            sector[offset..offset + 64].copy_from_slice(&artist_bytes);
-            offset += 64;
-
-            // Title (64 bytes)
-            let title_bytes = pad_string(&song.title, 64);
-            sector[offset..offset + 64].copy_from_slice(&title_bytes);
-            offset += 64;
-        }
-
-        // End magic
-        if offset + MAGIC.len() <= SECTOR_SIZE {
-            sector[offset..offset + MAGIC.len()].copy_from_slice(MAGIC);
-        }
-
-        sector
+impl Album {
+    /// Create a new empty album.
+    pub fn new() -> Self {
+        Self { songs: Vec::new() }
     }
 
-    /// Parse album metadata from a sector
-    pub fn from_sector(data: &[u8]) -> Result<Self, String> {
-        if data.len() < SECTOR_SIZE {
-            return Err("Invalid sector size".into());
-        }
-
-        // Check magic
-        if &data[0..MAGIC.len()] != MAGIC {
-            return Err("Not an album sector".into());
-        }
-
-        let mut offset = MAGIC.len();
-        let _total_sectors = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-        offset += 4;
-
-        let song_count = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        offset += 4;
-
-        let title = read_padded_string(&data[offset..offset + 64]);
-        offset += 64;
-
-        let mut songs = Vec::with_capacity(song_count);
-        for _ in 0..song_count {
-            let start_sector = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-            offset += 4;
-            let length_sectors = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-            offset += 4;
-            let artist = read_padded_string(&data[offset..offset + 64]);
-            offset += 64;
-            let song_title = read_padded_string(&data[offset..offset + 64]);
-            offset += 64;
-
-            songs.push(SongEntry {
-                start_sector,
-                length_sectors,
-                artist,
-                title: song_title,
-            });
-        }
-
-        Ok(AlbumMetadata { title, songs })
+    /// Add a song to the album.
+    pub fn add_song(&mut self, song: Song) {
+        self.songs.push(song);
     }
 }
 
-fn pad_string(s: &str, len: usize) -> Vec<u8> {
-    let mut bytes = s.as_bytes().to_vec();
-    bytes.truncate(len - 1); // Leave room for null terminator
-    bytes.push(0); // Null terminator
-    while bytes.len() < len {
-        bytes.push(b'X'); // X-padding
-    }
-    bytes
+
+/// Errors that can occur during metadata parsing.
+#[derive(Debug)]
+pub enum MetadataError {
+    InvalidMagic,
+    InvalidVersion(u8),
+    TooManySongs(usize),
+    InvalidUtf8(std::str::Utf8Error),
 }
 
-fn read_padded_string(data: &[u8]) -> String {
-    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-    String::from_utf8_lossy(&data[..end]).to_string()
+impl fmt::Display for MetadataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidMagic => write!(f, "Invalid magic bytes — expected 'ALBUM_PRESENT'"),
+            Self::InvalidVersion(v) => write!(f, "Unsupported metadata version: {}", v),
+            Self::TooManySongs(n) => write!(f, "Too many songs ({}), max is {}", n, MAX_SONGS),
+            Self::InvalidUtf8(e) => write!(f, "Invalid UTF-8 in string field: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for MetadataError {}
+
+
+/// Pad a string to exactly 64 bytes: null-terminated, remainder filled with 'X'.
+fn pad_string_field(s: &str) -> [u8; STRING_FIELD_SIZE] {
+    let mut buf = [b'X'; STRING_FIELD_SIZE];
+    let bytes = s.as_bytes();
+    let copy_len = bytes.len().min(STRING_FIELD_SIZE - 1);
+    buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+    buf[copy_len] = b'\0'; // null terminate
+    buf
+}
+
+
+/// Parse a padded string field (64 bytes, null-terminated, 'X' padded).
+fn parse_string_field(buf: &[u8; STRING_FIELD_SIZE]) -> Result<String, MetadataError> {
+    // Find null terminator position
+    let end = buf.iter().position(|&b| b == b'\0').unwrap_or(STRING_FIELD_SIZE);
+    let slice = &buf[..end];
+    // Trim trailing 'X' characters that may appear before null
+    let trimmed = slice.strip_suffix(&[b'X']).unwrap_or(slice);
+    let trimmed = trimmed.strip_suffix(&[b'X']).unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix(&[b'X']).unwrap_or(trimmed);
+    let s = std::str::from_utf8(trimmed).map_err(MetadataError::InvalidUtf8)?;
+    Ok(s.to_string())
+}
+
+
+/// Serialize an Album into an 8192-byte metadata sector.
+///
+/// Format:
+///   [MAGIC: 13][version: 1][reserved: 2][song_count: 4][song_entries...]
+///   Remaining bytes are zero-padded.
+pub fn serialize_album(album: &Album) -> [u8; super::SECTOR_SIZE] {
+    let mut sector = [0u8; super::SECTOR_SIZE];
+
+    // Magic bytes (0-12)
+    sector[0..13].copy_from_slice(MAGIC);
+
+    // Version (13)
+    sector[13] = VERSION;
+
+    // Reserved (14-15) remain zero
+
+    // Song count u32 LE (16-19)
+    let count = album.songs.len().min(MAX_SONGS) as u32;
+    sector[16..20].copy_from_slice(&count.to_le_bytes());
+
+    // Song entries starting at byte 20
+    for (i, song) in album.songs.iter().take(MAX_SONGS).enumerate() {
+        let offset = 20 + i * SONG_ENTRY_SIZE;
+
+        // start_sector u32 LE (bytes 0-3 of entry)
+        sector[offset..offset + 4].copy_from_slice(&song.start_sector.to_le_bytes());
+        // sector_count u32 LE (bytes 4-7 of entry)
+        sector[offset + 4..offset + 8].copy_from_slice(&song.sector_count.to_le_bytes());
+
+        // artist (bytes 8-71 of entry)
+        let artist_bytes = pad_string_field(&song.artist);
+        sector[offset + 8..offset + 8 + STRING_FIELD_SIZE].copy_from_slice(&artist_bytes);
+
+        // title (bytes 72-135 of entry)
+        let title_bytes = pad_string_field(&song.title);
+        sector[offset + 8 + STRING_FIELD_SIZE..offset + 8 + STRING_FIELD_SIZE * 2]
+            .copy_from_slice(&title_bytes);
+    }
+
+    sector
+}
+
+
+/// Parse an 8192-byte sector into an Album.
+///
+/// Returns `MetadataError::InvalidMagic` if magic bytes don't match.
+/// Returns `MetadataError::InvalidVersion` if the format version is unsupported.
+pub fn parse_album(sector: &[u8; super::SECTOR_SIZE]) -> Result<Album, MetadataError> {
+    // Validate magic bytes
+    if &sector[0..13] != MAGIC {
+        return Err(MetadataError::InvalidMagic);
+    }
+
+    // Check version
+    let version = sector[13];
+    if version != VERSION {
+        return Err(MetadataError::InvalidVersion(version));
+    }
+
+    // Read song count
+    let count = u32::from_le_bytes([
+        sector[16], sector[17], sector[18], sector[19],
+    ]) as usize;
+
+    if count > MAX_SONGS {
+        return Err(MetadataError::TooManySongs(count));
+    }
+
+    let mut songs = Vec::with_capacity(count);
+
+    for i in 0..count {
+        let offset = 20 + i * SONG_ENTRY_SIZE;
+        if offset + SONG_ENTRY_SIZE > super::SECTOR_SIZE {
+            break;
+        }
+
+        let start_sector = u32::from_le_bytes([
+            sector[offset], sector[offset + 1],
+            sector[offset + 2], sector[offset + 3],
+        ]);
+
+        let sector_count = u32::from_le_bytes([
+            sector[offset + 4], sector[offset + 5],
+            sector[offset + 6], sector[offset + 7],
+        ]);
+
+        let artist_bytes: [u8; STRING_FIELD_SIZE] = sector[
+            offset + 8..offset + 8 + STRING_FIELD_SIZE
+        ].try_into().unwrap();
+
+        let title_bytes: [u8; STRING_FIELD_SIZE] = sector[
+            offset + 8 + STRING_FIELD_SIZE..offset + 8 + STRING_FIELD_SIZE * 2
+        ].try_into().unwrap();
+
+        songs.push(Song {
+            start_sector,
+            sector_count,
+            artist: parse_string_field(&artist_bytes)?,
+            title: parse_string_field(&title_bytes)?,
+        });
+    }
+
+    Ok(Album { songs })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pad_and_parse_string_field() {
+        let padded = pad_string_field("The Beatles");
+        // First 11 chars "The Beatles", then null, then X padding
+        assert_eq!(&padded[..11], b"The Beatles");
+        assert_eq!(padded[11], b'\0');
+        assert_eq!(padded[12], b'X');
+        assert_eq!(padded[63], b'X');
+
+        let parsed = parse_string_field(&padded).unwrap();
+        assert_eq!(parsed, "The Beatles");
+    }
+
+    #[test]
+    fn test_string_field_truncation() {
+        let long_name = "A".repeat(70);
+        let padded = pad_string_field(&long_name);
+        // First 63 bytes are 'A', then null terminator at position 63
+        assert_eq!(&padded[..63], b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        assert_eq!(padded[63], b'\0');
+
+        let parsed = parse_string_field(&padded).unwrap();
+        assert_eq!(parsed.len(), 63);
+    }
+
+    #[test]
+    fn test_serialize_parse_roundtrip() {
+        let mut album = Album::new();
+        album.add_song(Song {
+            start_sector: 1,
+            sector_count: 1000,
+            artist: "Daft Punk".into(),
+            title: "Get Lucky".into(),
+        });
+        album.add_song(Song {
+            start_sector: 1001,
+            sector_count: 800,
+            artist: "Queen".into(),
+            title: "Bohemian Rhapsody".into(),
+        });
+
+        let sector = serialize_album(&album);
+        let parsed = parse_album(&sector).unwrap();
+
+        assert_eq!(parsed.songs.len(), 2);
+        assert_eq!(parsed.songs[0].start_sector, 1);
+        assert_eq!(parsed.songs[0].sector_count, 1000);
+        assert_eq!(parsed.songs[0].artist, "Daft Punk");
+        assert_eq!(parsed.songs[0].title, "Get Lucky");
+        assert_eq!(parsed.songs[1].start_sector, 1001);
+        assert_eq!(parsed.songs[1].artist, "Queen");
+        assert_eq!(parsed.songs[1].title, "Bohemian Rhapsody");
+    }
+
+    #[test]
+    fn test_invalid_magic() {
+        let sector = [0u8; super::SECTOR_SIZE];
+        let result = parse_album(&sector);
+        assert!(matches!(result, Err(MetadataError::InvalidMagic)));
+    }
+
+    #[test]
+    fn test_empty_album() {
+        let album = Album::new();
+        let sector = serialize_album(&album);
+        let parsed = parse_album(&sector).unwrap();
+        assert!(parsed.songs.is_empty());
+    }
+
+    #[test]
+    fn test_version_check() {
+        let mut sector = [0u8; super::SECTOR_SIZE];
+        sector[0..13].copy_from_slice(MAGIC);
+        sector[13] = 99; // wrong version
+        let result = parse_album(&sector);
+        assert!(matches!(result, Err(MetadataError::InvalidVersion(99))));
+    }
 }
