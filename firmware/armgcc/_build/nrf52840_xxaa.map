@@ -6160,7 +6160,7 @@ Memory Configuration
 
 Name             Origin             Length             Attributes
 FLASH            0x00020000         0x000defff         xr
-RAM              0x20000000         0x00040000         xrw
+RAM              0x20000000         0x0001fff0         xrw
 *default*        0x00000000         0xffffffff
 
 Linker script and memory map
@@ -7316,9 +7316,9 @@ END GROUP
 .stack_dummy    0x200031b0     0x2000
  *(.stack*)
  .stack         0x200031b0     0x2000 _build/nrf52840_xxaa/gcc_startup_nrf52840.S.o
-                0x20040000                        __StackTop = (ORIGIN (RAM) + LENGTH (RAM))
-                0x2003e000                        __StackLimit = (__StackTop - SIZEOF (.stack_dummy))
-                0x20040000                        PROVIDE (__stack = __StackTop)
+                0x2001fff0                        __StackTop = (ORIGIN (RAM) + LENGTH (RAM))
+                0x2001dff0                        __StackLimit = (__StackTop - SIZEOF (.stack_dummy))
+                0x2001fff0                        PROVIDE (__stack = __StackTop)
                 0x00000001                        ASSERT ((__StackLimit >= __HeapLimit), region RAM overflowed with stack)
                 0x000000b8                        DataInitFlashUsed = (__bss_start__ - __data_start__)
                 0x000088f4                        CodeFlashUsed = (__etext - ORIGIN (FLASH))
