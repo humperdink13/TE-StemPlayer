@@ -173,7 +173,7 @@ const SongEditor = () => {
       {error ? <p className="inline-error">{error}</p> : null}
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <SortableContext items={activeAlbum.songs.map((song) => song.id)} strategy={verticalListSortingStrategy}>
+        <SortableContext items={activeAlbum.songs.map((song) => song.id!)} strategy={verticalListSortingStrategy}>
           <div className="sortable-list">
             {activeAlbum.songs.map((song, index) => (
               <SortableSong
@@ -182,7 +182,7 @@ const SongEditor = () => {
                 key={song.id}
                 onRemove={removeSong}
                 onUpload={(album, selectedSong) => void uploadSong(album, selectedSong)}
-                song={song}
+                song={song as ManagedSong}
               />
             ))}
           </div>

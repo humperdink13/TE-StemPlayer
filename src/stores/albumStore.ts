@@ -138,11 +138,11 @@ export const useAlbumStore = create<AlbumState>((set, get) => ({
     set((state) => ({
       albums: state.albums.map((album) =>
         album.id === albumId
-          ? {
+          ? ({
               ...album,
-              songs: album.songs.filter((song) => song.id !== songId),
+              songs: album.songs.filter((song): song is ManagedSong => song.id !== songId),
               updatedAt: new Date().toISOString(),
-            }
+            } as ManagedAlbum)
           : album,
       ),
     })),
@@ -161,7 +161,7 @@ export const useAlbumStore = create<AlbumState>((set, get) => ({
           return album;
         }
 
-        const songs = [...album.songs];
+        const songs: ManagedSong[] = [...album.songs];
         const [moved] = songs.splice(oldIndex, 1);
         songs.splice(newIndex, 0, moved);
 
@@ -169,7 +169,7 @@ export const useAlbumStore = create<AlbumState>((set, get) => ({
           ...album,
           songs,
           updatedAt: new Date().toISOString(),
-        };
+        } as ManagedAlbum;
       }),
     })),
 
@@ -179,12 +179,12 @@ export const useAlbumStore = create<AlbumState>((set, get) => ({
     set((state) => ({
       albums: state.albums.map((album) =>
         album.id === albumId
-          ? {
+          ? ({
               ...album,
               songs: album.songs.map((song) =>
-                song.id === songId ? { ...song, uploaded: true } : song,
+                song.id === songId ? { ...song, uploaded: true } as ManagedSong : song as ManagedSong,
               ),
-            }
+            } as ManagedAlbum)
           : album,
       ),
     })),
