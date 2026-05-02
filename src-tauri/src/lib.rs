@@ -128,7 +128,11 @@ async fn run_separation_pipeline(
         let downloader = sidecar_dir.join("downloader.py");
         let output_wav = output_dir.join("source.wav");
 
+        // Ensure Homebrew binaries (ffmpeg, etc.) are on PATH
+        let path_env = format!("/opt/homebrew/bin:/usr/local/bin:{}", std::env::var("PATH").unwrap_or_default());
+
         let mut child = Command::new("python3")
+            .env("PATH", &path_env)
             .arg(&downloader)
             .arg("--url")
             .arg(&source.value)
@@ -174,7 +178,9 @@ async fn run_separation_pipeline(
     }));
 
     let separator = sidecar_dir.join("stem_separator.py");
+    let path_env = format!("/opt/homebrew/bin:/usr/local/bin:{}", std::env::var("PATH").unwrap_or_default());
     let mut child = Command::new("python3")
+        .env("PATH", &path_env)
         .arg(&separator)
         .arg("--input")
         .arg(&audio_path)

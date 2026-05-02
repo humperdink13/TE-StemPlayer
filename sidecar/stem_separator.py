@@ -10,6 +10,11 @@ import os
 import subprocess
 import sys
 import time
+
+# Ensure Homebrew binaries (ffmpeg) are on PATH
+for _p in ["/opt/homebrew/bin", "/usr/local/bin"]:
+    if _p not in os.environ.get("PATH", "") and os.path.isdir(_p):
+        os.environ["PATH"] = _p + ":" + os.environ.get("PATH", "")
 from pathlib import Path
 from typing import Optional, Dict, Any
 

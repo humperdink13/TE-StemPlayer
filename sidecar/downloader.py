@@ -15,6 +15,13 @@ from pathlib import Path
 from typing import Optional
 
 
+# Ensure Homebrew binaries (ffmpeg) are on PATH
+HOMEBREW_PATHS = ["/opt/homebrew/bin", "/usr/local/bin"]
+for p in HOMEBREW_PATHS:
+    if p not in os.environ.get("PATH", "") and os.path.isdir(p):
+        os.environ["PATH"] = p + ":" + os.environ.get("PATH", "")
+
+
 def find_yt_dlp() -> str:
     """Locate yt-dlp binary or module."""
     try:
@@ -33,6 +40,16 @@ def find_yt_dlp() -> str:
     raise RuntimeError("yt-dlp not found. Install with: pip install yt-dlp")
 
 
+def find_ffmpeg() -> Optional[str]:
+    """Locate ffmpeg binary."""
+    for p in HOMEBREW_PATHS:
+        candidate = os.path.join(p, "ffmpeg")
+        if os.path.isfile(candidate):
+            return candidate
+    import shutil
+    return shutil.which("ffmpeg")
+
+
 def emit_progress(percent, message):
     """Emit JSON progress line for Tauri sidecar consumption."""
     print(json.dumps({"percent": percent, "message": message}), flush=True)
@@ -47,14 +64,8 @@ def download_audio(
     """
     Download audio from YouTube URL as WAV.
 
-    Args:
-        url: YouTube URL
-        output_path: Full path for output WAV file (e.g. /tmp/stem-app/jobid/source.wav)
-        quality: Audio quality ('best' or '0' for best)
-        retries: Number of retry attempts on network failure
-
-    Returns:
-        Path to downloaded WAV file
+    Uses multiple strategies to work around YouTube's SABR streaming
+    restrictions which cause HTTP 403 errors with standard downloads.
     """
     yt_dlp = find_yt_dlp()
     output_dir = os.path.dirname(output_path)
@@ -62,61 +73,123 @@ def download_audio(
 
     cmd_base = ["yt-dlp"] if yt_dlp == "yt-dlp" else [sys.executable, "-m", "yt_dlp"]
 
-    # Download to a temp name, then rename to output_path
+    # Find ffmpeg location for --ffmpeg-location
+    ffmpeg_path = find_ffmpeg()
+    ffmpeg_dir = os.path.dirname(ffmpeg_path) if ffmpeg_path else None
+
     temp_template = os.path.join(output_dir, "download.%(ext)s")
 
-    cmd = cmd_base + [
-        "--extract-audio",
-        "--audio-format", "wav",
-        "--audio-quality", quality,
-        "--output", temp_template,
-        "--no-playlist",
-        "--no-progress",
-        url,
+    # Strategy list: try different approaches to work around YouTube 403/SABR
+    strategies = [
+        {
+            "name": "default with legacy-server-connect",
+            "extra_args": ["--legacy-server-connect"],
+        },
+        {
+            "name": "format 18 (360p mp4 with audio)",
+            "extra_args": ["-f", "18", "--legacy-server-connect"],
+        },
+        {
+            "name": "cookies from Chrome browser",
+            "extra_args": ["--cookies-from-browser", "chrome", "--legacy-server-connect"],
+        },
+        {
+            "name": "cookies from Firefox browser",
+            "extra_args": ["--cookies-from-browser", "firefox", "--legacy-server-connect"],
+        },
     ]
 
-    for attempt in range(retries):
-        try:
-            emit_progress(10 + attempt * 5, f"Downloading audio (attempt {attempt + 1})...")
+    last_error = None
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                check=True,
-            )
+    for strategy in strategies:
+        emit_progress(5, f"Trying download strategy: {strategy['name']}...")
 
-            # Find the downloaded wav file
-            wav_files = list(Path(output_dir).glob("download*.wav"))
-            if not wav_files:
-                # yt-dlp may have used a different name
-                wav_files = list(Path(output_dir).glob("*.wav"))
+        # Clean up any previous partial downloads
+        for f in Path(output_dir).glob("download*"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
 
-            if wav_files:
-                downloaded = str(max(wav_files, key=os.path.getctime))
-                # Rename to expected output path
-                if downloaded != output_path:
-                    os.rename(downloaded, output_path)
-                emit_progress(100, "Download complete")
-                return output_path
+        cmd = cmd_base + [
+            "--extract-audio",
+            "--audio-format", "wav",
+            "--audio-quality", quality,
+            "--output", temp_template,
+            "--no-playlist",
+            "--no-progress",
+        ]
 
-            raise FileNotFoundError(f"No WAV file found in {output_dir}. yt-dlp stderr: {result.stderr}")
+        if ffmpeg_dir:
+            cmd += ["--ffmpeg-location", ffmpeg_dir]
 
-        except subprocess.TimeoutExpired:
-            emit_progress(0, f"Download timed out (attempt {attempt + 1})")
-            if attempt == retries - 1:
-                raise RuntimeError(f"Download timed out after {retries} attempts")
-            time.sleep(2 ** attempt)
+        cmd += strategy["extra_args"]
+        cmd.append(url)
 
-        except subprocess.CalledProcessError as e:
-            error_msg = e.stderr.strip() if e.stderr else str(e)
-            emit_progress(0, f"Download error (attempt {attempt + 1}): {error_msg}")
-            if attempt == retries - 1:
-                raise RuntimeError(f"yt-dlp failed: {error_msg}")
-            time.sleep(2 ** attempt)
+        for attempt in range(retries):
+            try:
+                emit_progress(
+                    10 + attempt * 5,
+                    f"Downloading ({strategy['name']}, attempt {attempt + 1})...",
+                )
 
-    raise RuntimeError("Download failed after all retries")
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+
+                if result.returncode != 0:
+                    error_msg = result.stderr.strip() if result.stderr else result.stdout.strip()
+                    # Extract just the ERROR line
+                    for line in (error_msg or "").split("\n"):
+                        if "ERROR" in line:
+                            error_msg = line.strip()
+                            break
+                    last_error = error_msg
+                    if "403" in str(error_msg) or "Forbidden" in str(error_msg):
+                        # 403 means this strategy won't work, try next
+                        break
+                    # Other errors might be transient, retry
+                    time.sleep(2 ** attempt)
+                    continue
+
+                # Find the downloaded wav file
+                wav_files = list(Path(output_dir).glob("download*.wav"))
+                if not wav_files:
+                    wav_files = list(Path(output_dir).glob("*.wav"))
+
+                if wav_files:
+                    downloaded = str(max(wav_files, key=os.path.getctime))
+                    # Check file is not empty
+                    if os.path.getsize(downloaded) == 0:
+                        last_error = "Downloaded file is empty (0 bytes)"
+                        break
+                    if downloaded != output_path:
+                        os.rename(downloaded, output_path)
+                    emit_progress(100, "Download complete")
+                    return output_path
+
+                last_error = f"No WAV file found in {output_dir}"
+                break
+
+            except subprocess.TimeoutExpired:
+                last_error = f"Download timed out (attempt {attempt + 1})"
+                emit_progress(0, last_error)
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+
+    # All strategies failed
+    raise RuntimeError(
+        f"YouTube download failed after trying all strategies. Last error: {last_error}\n\n"
+        "This is likely due to YouTube's SABR streaming restrictions (see "
+        "https://github.com/yt-dlp/yt-dlp/issues/12482).\n\n"
+        "Workarounds:\n"
+        "1. Update Python to 3.10+ and install latest yt-dlp nightly\n"
+        "2. Use a local audio file instead of YouTube URL\n"
+        "3. Download the audio manually and use the file input option"
+    )
 
 
 def main_cli():

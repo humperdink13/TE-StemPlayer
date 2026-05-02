@@ -4,10 +4,11 @@ const STEM_PLAYER_VID: u16 = 0x2367;
 const STEM_PLAYER_PID: u16 = 0x1701;
 const SECTOR_SIZE: usize = 8192;
 const MAX_RETRIES: u32 = 3;
-/// Maximum bytes per USB control transfer. The nRF52840 is USB 2.0 full-speed;
-/// many embedded stacks cannot handle large control-transfer data stages.
-/// 512 bytes is a safe, performant choice (16 transfers per 8192-byte sector).
-const CHUNK_SIZE: usize = 512;
+/// nRF52840 is USB 2.0 Full-Speed (12 Mbps). Full-speed control transfers
+/// have a maximum data stage of 64 bytes per transaction. Using larger values
+/// causes PIPE errors (STALL) because the device firmware rejects oversized
+/// control transfers.
+const CHUNK_SIZE: usize = 64;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DeviceInfo {
@@ -38,6 +39,14 @@ impl StemPlayerDevice {
                         let _ = handle.detach_kernel_driver(iface);
                     }
                 }
+
+                // Set active configuration (required before control transfers,
+                // matches all working PyUSB fuzzing scripts)
+                let _ = handle.set_active_configuration(1);
+
+                // Claim interface 0 (CDC ACM data interface)
+                // This is required for vendor control transfers on the Stem Player
+                let _ = handle.claim_interface(0);
 
                 let serial = handle.read_serial_number_string_ascii(&desc).ok();
                 self.handle = Some(handle);
