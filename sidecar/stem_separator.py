@@ -36,6 +36,17 @@ def check_dependencies():
         print(json.dumps({"type": "error", "stage": "error", "percent": 0, "message": msg}), flush=True)
         sys.exit(1)
 
+    # Check for ffmpeg (needed for audio normalization/resampling)
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        msg = (
+            "ffmpeg not found. Install with: brew install ffmpeg (macOS), "
+            "apt install ffmpeg (Linux), or download from https://ffmpeg.org"
+        )
+        print(json.dumps({"type": "error", "stage": "error", "percent": 0, "message": msg}), flush=True)
+        sys.exit(1)
+
 
 # ---------------------------------------------------------------------------
 # Device detection
