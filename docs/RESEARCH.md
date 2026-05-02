@@ -210,11 +210,17 @@ The device context file notes `emmc_ok=0`, meaning the eMMC initialization is fa
 
 ## Plan: Getting New Music On The Device
 
-### Phase 1: Firmware Recovery
+### Phase 1: Device Backup & Connection
 
-1. **Flash working firmware** via [solderless.engineering](https://solderless.engineering) or physical bootloader entry
-2. Verify `emmc_ok=1` after firmware update
-3. Confirm USB CDC ACM communication works
+> **No firmware changes required.** The stock firmware exposes USB CDC ACM serial access to the eMMC. As long as the device plays its default music, the eMMC is working.
+
+1. **Connect device via USB-C** → detect CDC ACM serial port (VID:PID `0x2367:0x1701`)
+2. **Full device backup**: Read ALL sectors from the eMMC and save to a binary backup file (`.stembackup`)
+   - Read sector 0 (album metadata) to determine total sector count
+   - Sequentially read every sector and write to the backup file
+   - Store a SHA-256 checksum for integrity verification
+3. **Verify backup**: Compare checksums and spot-check random sectors
+4. **Restore capability**: The app will include a "Restore from Backup" function that writes the entire backup file back to the device sector-by-sector, restoring it to factory state
 
 ### Phase 2: Stem Preparation Pipeline
 
@@ -263,13 +269,12 @@ The TE-StemPlayer repo already has a Tauri + React + TypeScript application scaf
 
 | # | Question/Blocker | Status |
 |---|-----------------|--------|
-| 1 | `emmc_ok=0` — eMMC not initializing | 🔴 Blocker |
-| 2 | Exact USB protocol commands for sector read/write | 🟡 Needs verification |
-| 3 | Does solderless.engineering work with current bootloader? | 🟡 Needs testing |
-| 4 | Album metadata format — exact byte layout beyond song count | 🟡 Partially known |
-| 5 | LED mode values — are there more than off/solid/pulse/reactive? | 🟢 Low priority |
-| 6 | Tempo data format in bytes 2042–2043 | 🟡 Unknown encoding |
-| 7 | Can we flash custom firmware to add features? | 🟢 Future goal |
+| 1 | Exact USB protocol commands for sector read/write | 🟡 Needs verification |
+| 2 | Album metadata format — exact byte layout beyond song count | 🟡 Partially known |
+| 3 | Total sector count — how to determine eMMC used/total size | 🟡 Needed for full backup |
+| 4 | LED mode values — are there more than off/solid/pulse/reactive? | 🟢 Low priority |
+| 5 | Tempo data format in bytes 2042–2043 | 🟡 Unknown encoding |
+| 6 | Backup file format — include header with device info + checksum? | 🟡 Design needed |
 
 ## Sources
 
