@@ -28,18 +28,14 @@ impl StemPlayerDevice {
             if desc.vendor_id() == STEM_PLAYER_VID && desc.product_id() == STEM_PLAYER_PID {
                 let handle = device.open().map_err(|e| format!("Cannot open device: {}", e))?;
 
-                // Detach kernel driver if active on interface 0 (CDC control)
-                if let Ok(true) = handle.kernel_driver_active(0) {
-                    let _ = handle.detach_kernel_driver(0);
+                // Detach kernel driver if active (Linux/macOS CDC ACM driver)
+                // This is needed to prevent the OS CDC driver from interfering
+                // with vendor control transfers on some platforms
+                for iface in 0..=1 {
+                    if let Ok(true) = handle.kernel_driver_active(iface) {
+                        let _ = handle.detach_kernel_driver(iface);
+                    }
                 }
-                // Also check interface 1 (CDC data)
-                if let Ok(true) = handle.kernel_driver_active(1) {
-                    let _ = handle.detach_kernel_driver(1);
-                }
-
-                // Note: We do NOT claim an interface for vendor control transfers.
-                // Vendor requests go to the device (Recipient::Device), not a specific interface.
-                // Claiming the CDC ACM interface can interfere with vendor control transfers.
 
                 let serial = handle.read_serial_number_string_ascii(&desc).ok();
                 self.handle = Some(handle);
@@ -68,30 +64,33 @@ impl StemPlayerDevice {
             let offset = (i as usize) * SECTOR_SIZE;
             let mut sector_buf = [0u8; SECTOR_SIZE];
 
-            // Use raw request type 0xC0: Device-to-Host, Vendor, Device recipient
             let mut last_err = None;
             for retry in 0..MAX_RETRIES {
                 match handle.read_control(
-                    0xC0, // Direction: In, Type: Vendor, Recipient: Device
+                    0xC0, // Device-to-Host, Vendor, Device recipient
                     0x01, // bRequest: Read
-                    (sector >> 16) as u16,   // wValue: high 16 bits of sector offset
-                    (sector & 0xFFFF) as u16, // wIndex: low 16 bits of sector offset
+                    (sector >> 16) as u16,
+                    (sector & 0xFFFF) as u16,
                     &mut sector_buf,
                     Duration::from_secs(5),
                 ) {
                     Ok(bytes_read) => {
                         if bytes_read != SECTOR_SIZE {
-                            return Err(format!(
+                            last_err = Some(format!(
                                 "Read sector {}: expected {} bytes, got {}",
                                 sector, SECTOR_SIZE, bytes_read
                             ));
+                            std::thread::sleep(Duration::from_millis(100 * (retry as u64 + 1)));
+                            continue;
                         }
                         last_err = None;
                         break;
                     }
                     Err(e) => {
-                        last_err = Some(format!("Read sector {} failed (attempt {}): {}", sector, retry + 1, e));
-                        // Small delay before retry
+                        last_err = Some(format!(
+                            "Read sector {} failed (attempt {}): {}",
+                            sector, retry + 1, e
+                        ));
                         std::thread::sleep(Duration::from_millis(100 * (retry as u64 + 1)));
                     }
                 }
@@ -122,21 +121,31 @@ impl StemPlayerDevice {
 
             let mut last_err = None;
             for retry in 0..MAX_RETRIES {
-                // Use raw request type 0x40: Host-to-Device, Vendor, Device recipient
                 match handle.write_control(
-                    0x40, // Direction: Out, Type: Vendor, Recipient: Device
+                    0x40, // Host-to-Device, Vendor, Device recipient
                     0x02, // bRequest: Write
                     (sector >> 16) as u16,
                     (sector & 0xFFFF) as u16,
                     &data[offset..offset + SECTOR_SIZE],
                     Duration::from_secs(5),
                 ) {
-                    Ok(_) => {
+                    Ok(bytes_written) => {
+                        if bytes_written != SECTOR_SIZE {
+                            last_err = Some(format!(
+                                "Write sector {}: expected {} bytes written, got {}",
+                                sector, SECTOR_SIZE, bytes_written
+                            ));
+                            std::thread::sleep(Duration::from_millis(100 * (retry as u64 + 1)));
+                            continue;
+                        }
                         last_err = None;
                         break;
                     }
                     Err(e) => {
-                        last_err = Some(format!("Write sector {} failed (attempt {}): {}", sector, retry + 1, e));
+                        last_err = Some(format!(
+                            "Write sector {} failed (attempt {}): {}",
+                            sector, retry + 1, e
+                        ));
                         std::thread::sleep(Duration::from_millis(100 * (retry as u64 + 1)));
                     }
                 }
