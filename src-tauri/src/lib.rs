@@ -32,8 +32,9 @@ fn get_device_status(state: State<AppState>) -> Result<bool, String> {
 #[tauri::command]
 fn read_album_metadata(state: State<AppState>) -> Result<String, String> {
     let device = state.device.lock().map_err(|e| format!("{}", e))?;
-    let sector_data = device.read_sectors(0, 1)?;
-    let album = audio::metadata::AlbumMetadata::from_sector(&sector_data)?;
+    let sector_data_vec = device.read_sectors(0, 1)?;
+    let sector_data: &[u8; 8192] = sector_data_vec[0..8192].try_into().map_err(|_| "Invalid sector size")?;
+    let album = audio::metadata::parse_album(&sector_data).map_err(|e| format!("{}", e))?;
     serde_json::to_string(&album).map_err(|e| format!("{}", e))
 }
 

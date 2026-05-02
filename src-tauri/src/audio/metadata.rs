@@ -33,6 +33,7 @@ pub const MAX_SONGS: usize = (super::SECTOR_SIZE - 20) / SONG_ENTRY_SIZE; // ~60
 
 /// A single song entry in the album metadata.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize)]
 pub struct Song {
     /// Sector index where this song's data begins.
     pub start_sector: u32,
@@ -47,6 +48,7 @@ pub struct Song {
 
 /// Album metadata containing all songs on the device.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize)]
 pub struct Album {
     pub songs: Vec<Song>,
 }
