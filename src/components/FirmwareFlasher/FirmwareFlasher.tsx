@@ -140,23 +140,28 @@ export const FirmwareFlasher = ({ autoStart }: { autoStart?: boolean }) => {
               </h3>
               <ol style={{ paddingLeft: "20px", color: "rgba(255,255,255,0.85)" }}>
                 <li style={{ marginBottom: "12px" }}>
-                  <strong>Unplug</strong> your Stem Player from USB
+                  <strong>Unplug</strong> your Stem Player from USB-C
                 </li>
                 <li style={{ marginBottom: "12px" }}>
-                  <strong>Press and hold</strong> the small <em>power/function button</em> on the
-                  side edge of the Stem Player (it&apos;s a tiny recessed button, not the touch sliders)
+                  <strong>Touch and hold</strong> the <em>top slider</em> on the Stem Player
+                  (the capacitive touch strip closest to the top edge of the disc)
                 </li>
                 <li style={{ marginBottom: "12px" }}>
-                  <strong>While holding the side button</strong>, plug the USB-C cable back in
+                  <strong>While holding the top slider</strong>, plug the USB-C cable back in
                 </li>
                 <li style={{ marginBottom: "12px" }}>
-                  <strong>Keep holding</strong> for 3 seconds after plugging in, then release
+                  <strong>Keep holding</strong> the slider for 3–5 seconds after plugging in,
+                  then release
                 </li>
                 <li>
-                  The device should now be in <strong>bootloader mode</strong> — the LEDs may
-                  behave differently and a new serial port will appear on your computer
+                  The light ring may flash or behave differently — the device is now in{" "}
+                  <strong>bootloader mode</strong> and a new serial port will appear
                 </li>
               </ol>
+              <p style={{ color: "rgba(255,255,255,0.5)", fontSize: "0.8rem", marginTop: "8px" }}>
+                💡 Alternative: You can also enter bootloader mode via{" "}
+                <strong>solderless.engineering</strong> in Chrome/Edge, then come back here to flash.
+              </p>
             </div>
 
             <button
@@ -263,7 +268,7 @@ export const FirmwareFlasher = ({ autoStart }: { autoStart?: boolean }) => {
             <h3 style={{ color: "#a7f3d0" }}>Firmware Updated Successfully!</h3>
             <p style={{ color: "rgba(255,255,255,0.7)", maxWidth: "400px", margin: "12px auto" }}>
               {progress?.message ||
-                "Press the function button on your Stem Player to restart it, then go to the Device tab and click Connect."}
+                "Unplug and replug your Stem Player to restart it, then go to the Device tab and click Connect."}
             </p>
             <div style={{ marginTop: "20px" }}>
               <p style={{ color: "rgba(255,255,255,0.5)", fontSize: "0.85rem" }}>Next steps:</p>
@@ -276,7 +281,7 @@ export const FirmwareFlasher = ({ autoStart }: { autoStart?: boolean }) => {
                   lineHeight: 1.8,
                 }}
               >
-                <li>Press the function button to restart the Stem Player</li>
+                <li>Unplug and replug the Stem Player to restart it</li>
                 <li>Wait 5 seconds for it to boot</li>
                 <li>Go to the <strong>Device</strong> tab and click <strong>Connect</strong></li>
               </ol>

@@ -275,7 +275,7 @@ async fn start_firmware_flash(app: AppHandle) -> Result<serde_json::Value, Strin
     let _ = app.emit("flash-progress", serde_json::json!({
         "stage": "waiting_bootloader",
         "percent": 0,
-        "message": "Step 1: Unplug your Stem Player. Then hold the small side button while plugging it back in via USB-C. This enters bootloader mode."
+        "message": "Step 1: Unplug your Stem Player. Then hold the top slider while plugging it back in via USB-C. This enters bootloader mode."
     }));
 
     // Find the firmware binary
@@ -325,7 +325,7 @@ async fn start_firmware_flash(app: AppHandle) -> Result<serde_json::Value, Strin
         let _ = app_handle.emit("flash-progress", serde_json::json!({
             "stage": "waiting_bootloader",
             "percent": 5,
-            "message": "Waiting for device to appear in bootloader mode... Hold the small side button and plug in USB-C now."
+            "message": "Waiting for device to appear in bootloader mode... Hold the top slider and plug in USB-C now."
         }));
 
         let mut port_found = None;
@@ -358,7 +358,7 @@ async fn start_firmware_flash(app: AppHandle) -> Result<serde_json::Value, Strin
                 let _ = app_handle.emit("flash-progress", serde_json::json!({
                     "stage": "waiting_bootloader",
                     "percent": 5,
-                    "message": format!("Still waiting... ({}s) Hold the small side button and plug in USB-C.", attempt / 2)
+                    "message": format!("Still waiting... ({}s) Hold the top slider and plug in USB-C.", attempt / 2)
                 }));
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -370,7 +370,7 @@ async fn start_firmware_flash(app: AppHandle) -> Result<serde_json::Value, Strin
                 let _ = app_handle.emit("flash-progress", serde_json::json!({
                     "stage": "error",
                     "percent": 0,
-                    "message": "Timed out waiting for bootloader. Make sure to hold the small side button while plugging in USB-C."
+                    "message": "Timed out waiting for bootloader. Make sure to hold the top slider while plugging in USB-C."
                 }));
                 return;
             }
@@ -401,7 +401,7 @@ async fn start_firmware_flash(app: AppHandle) -> Result<serde_json::Value, Strin
                     let _ = app_handle.emit("flash-progress", serde_json::json!({
                         "stage": "complete",
                         "percent": 100,
-                        "message": "Firmware flashed successfully! Press the function button to restart your Stem Player, then click Connect again."
+                        "message": "Firmware flashed successfully! Unplug and replug your Stem Player to restart it, then click Connect again."
                     }));
                     let _ = app_handle.emit("flash-done", serde_json::json!({}));
                 } else {
