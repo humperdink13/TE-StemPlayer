@@ -25,13 +25,13 @@ fn disconnect_device(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 fn get_device_status(state: State<AppState>) -> Result<bool, String> {
-    let device = state.device.lock().map_err(|e| format!("{}", e))?;
+    let mut device = state.device.lock().map_err(|e| format!("{}", e))?;
     Ok(device.is_connected())
 }
 
 #[tauri::command]
 fn read_album_metadata(state: State<AppState>) -> Result<String, String> {
-    let device = state.device.lock().map_err(|e| format!("{}", e))?;
+    let mut device = state.device.lock().map_err(|e| format!("{}", e))?;
     let sector_data_vec = device.read_sectors(0, 1)?;
     let sector_data: &[u8; 8192] = sector_data_vec[0..8192]
         .try_into()
@@ -43,7 +43,7 @@ fn read_album_metadata(state: State<AppState>) -> Result<String, String> {
 #[tauri::command]
 fn write_album_metadata(state: State<AppState>, album: audio::metadata::Album) -> Result<(), String> {
     let sector = audio::metadata::serialize_album(&album);
-    let device = state.device.lock().map_err(|e| format!("{}", e))?;
+    let mut device = state.device.lock().map_err(|e| format!("{}", e))?;
     device.write_sectors(0, &sector)
 }
 
@@ -248,7 +248,7 @@ fn upload_song(
     _album: audio::metadata::Album,
     song: audio::metadata::Song,
 ) -> Result<(), String> {
-    let device = state.device.lock().map_err(|e| format!("{}", e))?;
+    let mut device = state.device.lock().map_err(|e| format!("{}", e))?;
     if !device.is_connected() {
         return Err("No device connected. Please connect your Stem Player first.".to_string());
     }

@@ -18,5 +18,6 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusb = "0.9"
+serialport = "4.3"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
